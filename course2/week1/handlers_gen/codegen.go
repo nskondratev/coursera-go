@@ -64,6 +64,11 @@ type handlerTplParams struct {
 	HttpMethod string
 }
 
+type httpTplParams struct {
+	StructName    string
+	CodegenParams []*codegenParams
+}
+
 var (
 	handlerTpl = template.Must(template.New("handlerTpl").Parse(`
 func (h *{{.StructName}}) handler{{.MethodName}}(w http.ResponseWriter, r *http.Request) {
@@ -96,6 +101,19 @@ func (h *{{.StructName}}) handler{{.MethodName}}(w http.ResponseWriter, r *http.
 	rb, _ := json.Marshal(res)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(rb)
+}
+`))
+
+	httpTpl = template.Must(template.New("httpTpl").Parse(`
+func (h *{{.StructName}}) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	{{range $cp := .CodegenParams}}case "{{$cp.Url}}":
+		h.{{$cp.FuncName}}(w, r)
+	{{end}}default:
+		w.WriteHeader(http.StatusNotFound)
+		rb, _ := json.Marshal(map[string]string{"error": "unknown method"})
+		_, _ = w.Write(rb)
+	}
 }
 `))
 )
@@ -174,5 +192,12 @@ func main() {
 		}
 	}
 	fmt.Printf("Methods hub: %s\n", handlersHub)
+
+	// Generate ServeHTTP method for structs
+	for sn, cp := range handlersHub {
+		if err := httpTpl.Execute(out, httpTplParams{sn, cp}); err != nil {
+			log.Fatal(err)
+		}
+	}
 
 }

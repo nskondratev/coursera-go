@@ -215,22 +215,18 @@ func (h *{{.StructName}}) handler{{.MethodName}}(w http.ResponseWriter, r *http.
 		w.WriteHeader(http.StatusNotAcceptable)
 		_, _ = w.Write([]byte("{\"error\":\"bad method\"}"))
 		return
-	}{{end}}
-	{{if .Auth}}
+	}{{end}}{{if .Auth}}
 	if strings.Compare(r.Header.Get("X-Auth"), "100500") != 0 {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte("{\"error\":\"unauthorized\"}"))
 		return
 	}
-	{{end}}
-	// Fill params
-	params := {{.ParamTypeName}}{}
+	{{end}}params := {{.ParamTypeName}}{}
 	{{range $f := .ValidateParams}}
 	{{$f.GetValueFromRequest $.HttpMethod}}
 	{{$f.GetValidation}}
 	params.{{$f.FieldName}} = raw{{$f.FieldName}}
 	{{end}}
-	// Validate params
 	ctx := context.Background()
 	res, err := h.{{.MethodName}}(ctx, params)
 	if err != nil {
@@ -269,6 +265,15 @@ type ResponseEnvelope struct {
 	Response interface{} ` + "`json:\"response,omitempty\"`" + `
 }
 `
+	imports = `
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+)
+`
 )
 
 func main() {
@@ -286,31 +291,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if _, err := fmt.Fprintln(out); err != nil { // empty line
-		log.Fatal(err)
-	}
-
-	if _, err := fmt.Fprintln(out, `import "context"`); err != nil {
-		log.Fatal(err)
-	}
-
-	if _, err := fmt.Fprintln(out, `import "encoding/json"`); err != nil {
-		log.Fatal(err)
-	}
-
-	if _, err := fmt.Fprintln(out, `import "net/http"`); err != nil {
-		log.Fatal(err)
-	}
-
-	if _, err := fmt.Fprintln(out, `import "strconv"`); err != nil {
-		log.Fatal(err)
-	}
-
-	if _, err := fmt.Fprintln(out, `import "strings"`); err != nil {
-		log.Fatal(err)
-	}
-
-	if _, err := fmt.Fprintln(out); err != nil { // empty line
+	if _, err := fmt.Fprint(out, imports); err != nil {
 		log.Fatal(err)
 	}
 
@@ -322,12 +303,10 @@ func main() {
 	for _, f := range node.Decls {
 		fn, ok := f.(*ast.FuncDecl)
 		if !ok {
-			fmt.Printf("SKIP %T is not ast.FuncDecl\n", f)
 			continue
 		}
 
 		if fn.Doc == nil {
-			fmt.Printf("SKIP func %s does not have comments\n", fn.Name.Name)
 			continue
 		}
 		needCodegen := false
@@ -341,9 +320,8 @@ func main() {
 			}
 		}
 		if !needCodegen {
-			fmt.Printf("SKIP func %s does not have // apigen:api comment\n", fn.Name.Name)
+			continue
 		}
-		fmt.Printf("GENERATE api wrapper for func %s, codegen params: %+v\n", fn.Name.Name, cp)
 		cp.FuncName = "handler" + fn.Name.Name
 		structName := fn.Recv.List[0].Type.(*ast.StarExpr).X.(*ast.Ident).Name
 		handlersHub.AddHandlerForStruct(structName, cp)
@@ -353,29 +331,24 @@ func main() {
 		argStructName := at.Name.Name
 		argStructFields := at.Type.(*ast.StructType).Fields.List
 
-		log.Printf("METHOD ARGUMENT: %s, %s, %#v", fn.Name.Name, argStructName, argStructFields)
-
 		vp := make([]*validateParams, len(argStructFields), len(argStructFields))
 
 		for i, field := range argStructFields {
 			fieldName := field.Names[0].Name
-			log.Printf("Process %s.%s field", argStructName, fieldName)
 
 			if field.Tag == nil {
-				log.Printf("Skip %s.%s field as there is no any tags", argStructName, fieldName)
 				continue
 			}
 
 			tag := reflect.StructTag(field.Tag.Value[1 : len(field.Tag.Value)-1])
 			if len(tag.Get("apivalidator")) < 1 {
-				log.Printf("Skip %s.%s field as there is no tag apivalidator", argStructName, fieldName)
 				continue
 			}
 
 			fieldType := field.Type.(*ast.Ident).Name
 
 			if fieldType != "int" && fieldType != "string" {
-				log.Printf("Skip %s.%s field as it is not int or string. Type: %s", argStructName, fieldName, fieldType)
+				continue
 			}
 
 			v := &validateParams{
@@ -387,7 +360,6 @@ func main() {
 			tagArgs := strings.Split(tag.Get("apivalidator"), ",")
 
 			for _, tagArg := range tagArgs {
-				log.Printf("Process tag arg: %s", tagArg)
 				tagTokens := strings.Split(tagArg, "=")
 				switch tagTokens[0] {
 				case "required":
@@ -401,15 +373,12 @@ func main() {
 					v.Default = tagTokens[1]
 				case "min":
 					num, _ := strconv.ParseInt(tagTokens[1], 10, 64)
-					log.Printf("Parsed min tag value: %d", num)
 					v.Min = &num
 				case "max":
 					num, _ := strconv.ParseInt(tagTokens[1], 10, 64)
 					v.Max = num
 				}
 			}
-
-			log.Printf("Constructed validateParams for field %s.%s: %#v", argStructName, fieldName, v)
 
 			vp[i] = v
 		}
@@ -418,7 +387,6 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	fmt.Printf("Methods hub: %s\n", handlersHub)
 
 	// Generate ServeHTTP method for structs
 	for sn, cp := range handlersHub {

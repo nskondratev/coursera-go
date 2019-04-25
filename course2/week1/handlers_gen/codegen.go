@@ -7,7 +7,6 @@ import (
 	"go/parser"
 	"go/token"
 	"log"
-	"net/http"
 	"os"
 	"reflect"
 	"strconv"
@@ -28,9 +27,6 @@ func newCodegenParamsFromJSON(b []byte) (*codegenParams, error) {
 	c := &codegenParams{}
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, err
-	}
-	if len(c.Method) < 1 {
-		c.Method = "GET"
 	}
 	return c, nil
 }
@@ -67,24 +63,26 @@ type validateParams struct {
 	ParamName string
 	Enum      []string
 	Default   string
-	Min       int64
+	Min       *int64
 	Max       int64
 }
 
 func (vp *validateParams) GetValueFromRequest(httpMethod string) string {
-	res := ""
-	switch httpMethod {
-	case http.MethodGet:
-		res = "r.URL.Query().Get(\"" + vp.ParamName + "\")"
-	case http.MethodPost:
-		res = "r.PostForm.Get(\"" + vp.ParamName + "\")"
-	}
+	res := "r.FormValue(\"" + vp.ParamName + "\")"
 
 	rawVarName := "raw" + vp.FieldName
 
 	switch vp.FieldType {
 	case "int":
-		res = rawVarName + ", _ := strconv.Atoi(" + res + ")"
+		res = rawVarName + ", err := strconv.Atoi(" + res + ")"
+		res = res + `
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` must be int",nil})
+		_, _ = w.Write(rb)
+		return
+	}
+`
 	case "string":
 		res = rawVarName + " := " + res
 	}
@@ -99,7 +97,7 @@ func (vp *validateParams) GetValidation() string {
 		case "int":
 			res = `if ` + rawVarName + ` == 0 {
 		w.WriteHeader(http.StatusBadRequest)
-		rb, _ := json.Marshal(map[string]string{"error": "` + vp.FieldName + ` must me not empty"})
+		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` must me not empty",nil})
 		_, _ = w.Write(rb)
 		return
 	}
@@ -107,9 +105,29 @@ func (vp *validateParams) GetValidation() string {
 		case "string":
 			res = `if len(` + rawVarName + `) < 1 {
 		w.WriteHeader(http.StatusBadRequest)
-		rb, _ := json.Marshal(map[string]string{"error": "` + vp.FieldName + ` must me not empty"})
+		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` must me not empty",nil})
 		_, _ = w.Write(rb)
 		return
+	}
+`
+		}
+	}
+
+	if len(vp.Default) > 0 {
+		switch vp.FieldType {
+		case "int":
+			dn, err := strconv.Atoi(vp.Default)
+			if err == nil && dn > 0 {
+				res = res + `
+	if ` + rawVarName + ` == 0 {
+		` + rawVarName + ` = ` + vp.Default + `
+	}
+`
+			}
+		case "string":
+			res = res + `
+	if len(` + rawVarName + `) < 1 {
+		` + rawVarName + ` = "` + vp.Default + `"
 	}
 `
 		}
@@ -127,41 +145,47 @@ func (vp *validateParams) GetValidation() string {
 			sb.WriteString("\"")
 		}
 		res = res + `
-		if ` + sb.String() + ` {
-			w.WriteHeader(http.StatusBadRequest)
-			rb, _ := json.Marshal(map[string]string{"error": "` + vp.FieldName + ` must me not empty"})
-			_, _ = w.Write(rb)
-			return
-		}
-`
-	}
-
-	switch vp.FieldType {
-	case "int":
-		dn, err := strconv.Atoi(vp.Default)
-		if err == nil && dn > 0 {
-			res = `if ` + rawVarName + ` == 0 {
-		` + rawVarName + ` = ` + vp.Default + `
-	}
-`
-		}
-	case "string":
-		res = `if len(` + rawVarName + `) < 1 {
-		` + rawVarName + ` = ` + vp.Default + `
+	if ` + sb.String() + ` {
+		w.WriteHeader(http.StatusBadRequest)
+		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` must be one of [` + strings.Join(vp.Enum, ", ") + `]",nil})
+		_, _ = w.Write(rb)
+		return
 	}
 `
 	}
 
-	if vp.Min > 0 {
+	if vp.Min != nil {
 		switch vp.FieldType {
 		case "int":
-			res = `if ` + rawVarName + ` >= ` + string(vp.Min) + ` {
-		` + rawVarName + ` = ` + vp.Default + `
+			res = res + `
+	if ` + rawVarName + ` < ` + strconv.FormatInt(*vp.Min, 10) + ` {
+		w.WriteHeader(http.StatusBadRequest)
+		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` must be >= ` + strconv.FormatInt(*vp.Min, 10) + `",nil})
+		_, _ = w.Write(rb)
+		return
 	}
 `
 		case "string":
-			res = `if len(` + rawVarName + `) < 1 {
-		` + rawVarName + ` = ` + vp.Default + `
+			res = res + `
+	if len(` + rawVarName + `) < ` + strconv.FormatInt(*vp.Min, 10) + ` {
+		w.WriteHeader(http.StatusBadRequest)
+		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` len must be >= ` + strconv.FormatInt(*vp.Min, 10) + `",nil})
+		_, _ = w.Write(rb)
+		return
+	}
+`
+		}
+	}
+
+	if vp.Max > 0 {
+		switch vp.FieldType {
+		case "int":
+			res = res + `
+	if ` + rawVarName + ` > ` + strconv.FormatInt(vp.Max, 10) + ` {
+		w.WriteHeader(http.StatusBadRequest)
+		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` must be <= ` + strconv.FormatInt(vp.Max, 10) + `",nil})
+		_, _ = w.Write(rb)
+		return
 	}
 `
 		}
@@ -187,11 +211,11 @@ type httpTplParams struct {
 var (
 	handlerTpl = template.Must(template.New("handlerTpl").Parse(`
 func (h *{{.StructName}}) handler{{.MethodName}}(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "{{.HttpMethod}}" {
-		w.WriteHeader(http.StatusNotFound)
+	{{if ne .HttpMethod ""}}if r.Method != "{{.HttpMethod}}" {
+		w.WriteHeader(http.StatusNotAcceptable)
 		_, _ = w.Write([]byte("{\"error\":\"bad method\"}"))
 		return
-	}
+	}{{end}}
 	{{if .Auth}}
 	if strings.Compare(r.Header.Get("X-Auth"), "100500") != 0 {
 		w.WriteHeader(http.StatusForbidden)
@@ -218,8 +242,9 @@ func (h *{{.StructName}}) handler{{.MethodName}}(w http.ResponseWriter, r *http.
 		w.WriteHeader(c)
 		rb, _ := json.Marshal(map[string]string{"error": e})
 		_, _ = w.Write(rb)
+		return
 	}
-	rb, _ := json.Marshal(res)
+	rb, _ := json.Marshal(&ResponseEnvelope{"", res})
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(rb)
 }
@@ -237,6 +262,13 @@ func (h *{{.StructName}}) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 `))
+
+	resEnvelope = `
+type ResponseEnvelope struct {
+	Error string ` + "`json:\"error\"`" + `
+	Response interface{} ` + "`json:\"response,omitempty\"`" + `
+}
+`
 )
 
 func main() {
@@ -279,6 +311,10 @@ func main() {
 	}
 
 	if _, err := fmt.Fprintln(out); err != nil { // empty line
+		log.Fatal(err)
+	}
+
+	if _, err := fmt.Fprint(out, resEnvelope); err != nil {
 		log.Fatal(err)
 	}
 
@@ -360,16 +396,20 @@ func main() {
 					v.ParamName = tagTokens[1]
 				case "enum":
 					v.Enum = strings.Split(tagTokens[1], "|")
+					//v.Required = true
 				case "default":
 					v.Default = tagTokens[1]
 				case "min":
 					num, _ := strconv.ParseInt(tagTokens[1], 10, 64)
-					v.Min = num
+					log.Printf("Parsed min tag value: %d", num)
+					v.Min = &num
 				case "max":
 					num, _ := strconv.ParseInt(tagTokens[1], 10, 64)
 					v.Max = num
 				}
 			}
+
+			log.Printf("Constructed validateParams for field %s.%s: %#v", argStructName, fieldName, v)
 
 			vp[i] = v
 		}

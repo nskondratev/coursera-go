@@ -7,7 +7,10 @@ import (
 	"go/parser"
 	"go/token"
 	"log"
+	"net/http"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -57,11 +60,123 @@ func (h serveHTTPMethodsHub) String() string {
 
 const apiGenPrefix = "// apigen:api "
 
+type validateParams struct {
+	FieldName string
+	FieldType string
+	Required  bool
+	ParamName string
+	Enum      []string
+	Default   string
+	Min       int64
+	Max       int64
+}
+
+func (vp *validateParams) GetValueFromRequest(httpMethod string) string {
+	res := ""
+	switch httpMethod {
+	case http.MethodGet:
+		res = "r.URL.Query().Get(\"" + vp.ParamName + "\")"
+	case http.MethodPost:
+		res = "r.PostForm.Get(\"" + vp.ParamName + "\")"
+	}
+
+	rawVarName := "raw" + vp.FieldName
+
+	switch vp.FieldType {
+	case "int":
+		res = rawVarName + ", _ := strconv.Atoi(" + res + ")"
+	case "string":
+		res = rawVarName + " := " + res
+	}
+	return res
+}
+
+func (vp *validateParams) GetValidation() string {
+	res := ""
+	rawVarName := "raw" + vp.FieldName
+	if vp.Required {
+		switch vp.FieldType {
+		case "int":
+			res = `if ` + rawVarName + ` == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		rb, _ := json.Marshal(map[string]string{"error": "` + vp.FieldName + ` must me not empty"})
+		_, _ = w.Write(rb)
+		return
+	}
+`
+		case "string":
+			res = `if len(` + rawVarName + `) < 1 {
+		w.WriteHeader(http.StatusBadRequest)
+		rb, _ := json.Marshal(map[string]string{"error": "` + vp.FieldName + ` must me not empty"})
+		_, _ = w.Write(rb)
+		return
+	}
+`
+		}
+	}
+
+	if len(vp.Enum) > 0 {
+		sb := strings.Builder{}
+		for i, v := range vp.Enum {
+			if i > 0 {
+				sb.WriteString(" && ")
+			}
+			sb.WriteString(rawVarName)
+			sb.WriteString(" != \"")
+			sb.WriteString(v)
+			sb.WriteString("\"")
+		}
+		res = res + `
+		if ` + sb.String() + ` {
+			w.WriteHeader(http.StatusBadRequest)
+			rb, _ := json.Marshal(map[string]string{"error": "` + vp.FieldName + ` must me not empty"})
+			_, _ = w.Write(rb)
+			return
+		}
+`
+	}
+
+	switch vp.FieldType {
+	case "int":
+		dn, err := strconv.Atoi(vp.Default)
+		if err == nil && dn > 0 {
+			res = `if ` + rawVarName + ` == 0 {
+		` + rawVarName + ` = ` + vp.Default + `
+	}
+`
+		}
+	case "string":
+		res = `if len(` + rawVarName + `) < 1 {
+		` + rawVarName + ` = ` + vp.Default + `
+	}
+`
+	}
+
+	if vp.Min > 0 {
+		switch vp.FieldType {
+		case "int":
+			res = `if ` + rawVarName + ` >= ` + string(vp.Min) + ` {
+		` + rawVarName + ` = ` + vp.Default + `
+	}
+`
+		case "string":
+			res = `if len(` + rawVarName + `) < 1 {
+		` + rawVarName + ` = ` + vp.Default + `
+	}
+`
+		}
+	}
+
+	return res
+}
+
 type handlerTplParams struct {
-	StructName string
-	MethodName string
-	Auth       bool
-	HttpMethod string
+	StructName     string
+	MethodName     string
+	Auth           bool
+	HttpMethod     string
+	ParamTypeName  string
+	ValidateParams []*validateParams
 }
 
 type httpTplParams struct {
@@ -72,19 +187,25 @@ type httpTplParams struct {
 var (
 	handlerTpl = template.Must(template.New("handlerTpl").Parse(`
 func (h *{{.StructName}}) handler{{.MethodName}}(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "{{.HttpMethod}}" {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("{\"error\":\"bad method\"}"))
+		return
+	}
 	{{if .Auth}}
 	if strings.Compare(r.Header.Get("X-Auth"), "100500") != 0 {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte("{\"error\":\"unauthorized\"}"))
 		return
 	}
-	{{- end}}
-	if r.Method != "{{.HttpMethod}}" {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte("{\"error\":\"bad method\"}"))
-		return
-	}
+	{{end}}
 	// Fill params
+	params := {{.ParamTypeName}}{}
+	{{range $f := .ValidateParams}}
+	{{$f.GetValueFromRequest $.HttpMethod}}
+	{{$f.GetValidation}}
+	params.{{$f.FieldName}} = raw{{$f.FieldName}}
+	{{end}}
 	// Validate params
 	ctx := context.Background()
 	res, err := h.{{.MethodName}}(ctx, params)
@@ -120,7 +241,6 @@ func (h *{{.StructName}}) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	handlersHub := make(serveHTTPMethodsHub)
-	_ = handlersHub // TODO: Delete
 
 	fset := token.NewFileSet()
 	node, err := parser.ParseFile(fset, os.Args[1], nil, parser.ParseComments)
@@ -147,6 +267,10 @@ func main() {
 	}
 
 	if _, err := fmt.Fprintln(out, `import "net/http"`); err != nil {
+		log.Fatal(err)
+	}
+
+	if _, err := fmt.Fprintln(out, `import "strconv"`); err != nil {
 		log.Fatal(err)
 	}
 
@@ -187,7 +311,70 @@ func main() {
 		cp.FuncName = "handler" + fn.Name.Name
 		structName := fn.Recv.List[0].Type.(*ast.StarExpr).X.(*ast.Ident).Name
 		handlersHub.AddHandlerForStruct(structName, cp)
-		if err := handlerTpl.Execute(out, handlerTplParams{structName, fn.Name.Name, cp.Auth, cp.Method}); err != nil {
+
+		// Parse second argument
+		at := fn.Type.Params.List[1].Type.(*ast.Ident).Obj.Decl.(*ast.TypeSpec)
+		argStructName := at.Name.Name
+		argStructFields := at.Type.(*ast.StructType).Fields.List
+
+		log.Printf("METHOD ARGUMENT: %s, %s, %#v", fn.Name.Name, argStructName, argStructFields)
+
+		vp := make([]*validateParams, len(argStructFields), len(argStructFields))
+
+		for i, field := range argStructFields {
+			fieldName := field.Names[0].Name
+			log.Printf("Process %s.%s field", argStructName, fieldName)
+
+			if field.Tag == nil {
+				log.Printf("Skip %s.%s field as there is no any tags", argStructName, fieldName)
+				continue
+			}
+
+			tag := reflect.StructTag(field.Tag.Value[1 : len(field.Tag.Value)-1])
+			if len(tag.Get("apivalidator")) < 1 {
+				log.Printf("Skip %s.%s field as there is no tag apivalidator", argStructName, fieldName)
+				continue
+			}
+
+			fieldType := field.Type.(*ast.Ident).Name
+
+			if fieldType != "int" && fieldType != "string" {
+				log.Printf("Skip %s.%s field as it is not int or string. Type: %s", argStructName, fieldName, fieldType)
+			}
+
+			v := &validateParams{
+				FieldName: fieldName,
+				FieldType: fieldType,
+				ParamName: strings.ToLower(fieldName),
+			}
+
+			tagArgs := strings.Split(tag.Get("apivalidator"), ",")
+
+			for _, tagArg := range tagArgs {
+				log.Printf("Process tag arg: %s", tagArg)
+				tagTokens := strings.Split(tagArg, "=")
+				switch tagTokens[0] {
+				case "required":
+					v.Required = true
+				case "paramname":
+					v.ParamName = tagTokens[1]
+				case "enum":
+					v.Enum = strings.Split(tagTokens[1], "|")
+				case "default":
+					v.Default = tagTokens[1]
+				case "min":
+					num, _ := strconv.ParseInt(tagTokens[1], 10, 64)
+					v.Min = num
+				case "max":
+					num, _ := strconv.ParseInt(tagTokens[1], 10, 64)
+					v.Max = num
+				}
+			}
+
+			vp[i] = v
+		}
+
+		if err := handlerTpl.Execute(out, handlerTplParams{structName, fn.Name.Name, cp.Auth, cp.Method, argStructName, vp}); err != nil {
 			log.Fatal(err)
 		}
 	}

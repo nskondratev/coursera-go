@@ -21,7 +21,7 @@ type apiError struct {
 }
 
 func (ae apiError) Error() string {
-	return fmt.Sprintf("api error %s", ae.Err.Error())
+	return ae.Err.Error()
 }
 
 type pathParams struct {
@@ -165,7 +165,7 @@ func (de *dbExplorer) GetRecordsList(table string, limit, offset int) ([]map[str
 	res := make([]map[string]interface{}, 0)
 	currTables, err := de.GetTablesList()
 	if err != nil {
-		return res, &apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
+		return res, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
 	}
 	tableExists := false
 	for _, tn := range currTables {
@@ -175,15 +175,15 @@ func (de *dbExplorer) GetRecordsList(table string, limit, offset int) ([]map[str
 		}
 	}
 	if !tableExists {
-		return res, &apiError{Err: errors.New("unknown table"), HTTPStatus: http.StatusNotFound}
+		return res, apiError{Err: errors.New("unknown table"), HTTPStatus: http.StatusNotFound}
 	}
 	rows, err := de.db.Query("SELECT * FROM `"+table+"` LIMIT ? OFFSET ?", limit, offset)
 	if err != nil {
-		return res, &apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
+		return res, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
 	}
 	cols, err := rows.ColumnTypes()
 	if err != nil {
-		return res, &apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
+		return res, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
 	}
 	for rows.Next() {
 		values := make([]interface{}, len(cols))
@@ -195,7 +195,7 @@ func (de *dbExplorer) GetRecordsList(table string, limit, offset int) ([]map[str
 		err := rows.Scan(values...)
 		log.Printf("Scanned values: %#v", values)
 		if err != nil {
-			return res, &apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
+			return res, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
 		}
 		toAdd := make(map[string]interface{})
 

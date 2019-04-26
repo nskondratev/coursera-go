@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"reflect"
 	"strconv"
 	"strings"
 )
@@ -105,11 +104,36 @@ func writeJSON(w http.ResponseWriter, statusCode int, p interface{}) {
 	}
 }
 
+type nullString struct {
+	sql.NullString
+}
+
+func (ns *nullString) MarshalJSON() ([]byte, error) {
+	if !ns.Valid {
+		return []byte("null"), nil
+	}
+	return json.Marshal(ns.String)
+}
+
 type columnDef struct {
 	Name     string
 	Type     string
 	Nullable bool
 	Default  sql.RawBytes
+}
+
+func (c columnDef) New() interface{} {
+	t := strings.ToLower(c.Type)
+	switch {
+	case strings.Contains(t, "int"):
+		return new(int)
+	case strings.Contains(t, "char") && !c.Nullable, strings.Contains(t, "text") && !c.Nullable:
+		return new(string)
+	case strings.Contains(t, "char") && c.Nullable, strings.Contains(t, "text") && c.Nullable:
+		return new(nullString)
+	default:
+		return new(sql.RawBytes)
+	}
 }
 
 type dbExplorer struct {
@@ -188,12 +212,8 @@ func (de *dbExplorer) GetTablesList() ([]string, error) {
 
 func (de *dbExplorer) GetRecordsList(table string, limit, offset int) ([]map[string]interface{}, error) {
 	res := make([]map[string]interface{}, 0)
-	currTables, err := de.GetTablesList()
-	if err != nil {
-		return res, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
-	}
 	tableExists := false
-	for _, tn := range currTables {
+	for _, tn := range de.tables {
 		if table == tn {
 			tableExists = true
 			break
@@ -206,27 +226,22 @@ func (de *dbExplorer) GetRecordsList(table string, limit, offset int) ([]map[str
 	if err != nil {
 		return res, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
 	}
-	cols, err := rows.ColumnTypes()
-	if err != nil {
-		return res, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
-	}
+	cols := de.columns[table]
 	for rows.Next() {
 		values := make([]interface{}, len(cols))
 
 		for i, col := range cols {
-			values[i] = reflect.New(col.ScanType()).Interface()
+			values[i] = col.New()
 		}
 
 		err := rows.Scan(values...)
-		log.Printf("Scanned values: %#v", values)
 		if err != nil {
 			return res, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
 		}
 		toAdd := make(map[string]interface{})
 
 		for i, col := range cols {
-			log.Printf("Process column %s, value: %#v", col.Name(), values[i])
-			toAdd[col.Name()] = values[i]
+			toAdd[col.Name] = values[i]
 		}
 
 		res = append(res, toAdd)

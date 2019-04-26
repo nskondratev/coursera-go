@@ -39,6 +39,7 @@ func newPathParams(r *http.Request) (*pathParams, error) {
 	p := strings.Split(r.URL.Path, "/")
 	log.Printf("Splitted path: %#v", p)
 	for i, pathPart := range p {
+		pathPart := pathPart
 		if len(pathPart) < 1 {
 			continue
 		}
@@ -91,6 +92,10 @@ type listTablesResponse struct {
 
 type listRecordsResponse struct {
 	Records []map[string]interface{} `json:"records"`
+}
+
+type recordResponse struct {
+	Record interface{} `json:"record"`
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, p interface{}) {
@@ -199,6 +204,8 @@ func (de *dbExplorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		de.HandleGetTablesList(w, r)
 	case pp.isRecordsList():
 		de.HandleRecordsList(w, r, pp)
+	case pp.isRecord():
+		de.HandleRecord(w, r, pp)
 	default:
 		writeJSON(w, http.StatusNotFound, &responseEnvelope{Error: "unknown path"})
 	}
@@ -250,6 +257,40 @@ func (de *dbExplorer) GetRecordsList(table string, limit, offset int) ([]map[str
 	return res, nil
 }
 
+func (de *dbExplorer) GetRecordById(table string, id int) (map[string]interface{}, error) {
+	log.Printf("GetRecordById call. Table: %s, id: %d", table, id)
+	tableExists := false
+	for _, tn := range de.tables {
+		if table == tn {
+			tableExists = true
+			break
+		}
+	}
+	if !tableExists {
+		return nil, apiError{Err: errors.New("unknown table"), HTTPStatus: http.StatusNotFound}
+	}
+
+	cols := de.columns[table]
+	values := make([]interface{}, len(cols))
+
+	for i, col := range cols {
+		values[i] = col.New()
+	}
+
+	row := de.db.QueryRow("SELECT * FROM `"+table+"` WHERE id = ?", id)
+	err := row.Scan(values...)
+	if err == sql.ErrNoRows {
+		return nil, apiError{Err: errors.New("record not found"), HTTPStatus: http.StatusNotFound}
+	} else if err != nil {
+		return nil, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
+	}
+	res := make(map[string]interface{})
+	for i, col := range cols {
+		res[col.Name] = values[i]
+	}
+	return res, nil
+}
+
 func (de *dbExplorer) HandleGetTablesList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad method"})
@@ -280,6 +321,24 @@ func (de *dbExplorer) HandleRecordsList(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &listRecordsResponse{Records: res}})
+	default:
+		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad method"})
+	}
+}
+
+func (de *dbExplorer) HandleRecord(w http.ResponseWriter, r *http.Request, pp *pathParams) {
+	switch r.Method {
+	case http.MethodGet:
+		res, err := de.GetRecordById(*pp.Table, *pp.ID)
+		if err != nil {
+			c := http.StatusInternalServerError
+			if ae, ok := err.(apiError); ok {
+				c = ae.HTTPStatus
+			}
+			writeJSON(w, c, &responseEnvelope{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &recordResponse{Record: res}})
 	default:
 		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad method"})
 	}

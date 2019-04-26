@@ -98,6 +98,10 @@ type recordResponse struct {
 	Record interface{} `json:"record"`
 }
 
+type idResponse struct {
+	ID int `json:"id"`
+}
+
 func writeJSON(w http.ResponseWriter, statusCode int, p interface{}) {
 	if statusCode < 0 {
 		statusCode = http.StatusInternalServerError
@@ -291,6 +295,47 @@ func (de *dbExplorer) GetRecordById(table string, id int) (map[string]interface{
 	return res, nil
 }
 
+func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) (int, error) {
+	log.Printf("CreateRecord method call. table: %s, record: %#v", table, record)
+	tableExists := false
+	for _, tn := range de.tables {
+		if table == tn {
+			tableExists = true
+			break
+		}
+	}
+	if !tableExists {
+		return 0, apiError{Err: errors.New("unknown table"), HTTPStatus: http.StatusNotFound}
+	}
+
+	cols := de.columns[table]
+	values := make([]interface{}, len(cols))
+	colNames := make([]string, len(cols), len(cols))
+	placeholders := make([]string, len(cols), len(cols))
+
+	for i, col := range cols {
+		if v, ok := record[col.Name]; ok {
+			values[i] = v
+		} else {
+			values[i] = col.Default
+		}
+		colNames[i] = col.Name
+		placeholders[i] = "?"
+	}
+
+	res, err := de.db.Exec("INSERT INTO `"+table+"` (`"+strings.Join(colNames, "`,`")+"`) VALUES ("+strings.Join(placeholders, ",")+")", values...)
+	if err != nil {
+		return 0, apiError{HTTPStatus: http.StatusInternalServerError, Err: err}
+	}
+	id, err := res.LastInsertId()
+
+	if err != nil {
+		return 0, apiError{HTTPStatus: http.StatusInternalServerError, Err: err}
+	}
+
+	return int(id), nil
+}
+
 func (de *dbExplorer) HandleGetTablesList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad method"})
@@ -321,6 +366,25 @@ func (de *dbExplorer) HandleRecordsList(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &listRecordsResponse{Records: res}})
+	case http.MethodPut:
+		decoder := json.NewDecoder(r.Body)
+		rb := make(map[string]interface{})
+		err := decoder.Decode(&rb)
+		if err != nil {
+			log.Printf("Error while parsing json request body: %s", err.Error())
+			writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad input"})
+			return
+		}
+		res, err := de.CreateRecord(*pp.Table, rb)
+		if err != nil {
+			c := http.StatusInternalServerError
+			if ae, ok := err.(apiError); ok {
+				c = ae.HTTPStatus
+			}
+			writeJSON(w, c, &responseEnvelope{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &idResponse{ID: res}})
 	default:
 		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad method"})
 	}

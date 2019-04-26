@@ -55,13 +55,13 @@ func newPathParams(r *http.Request) (*pathParams, error) {
 	}
 	rl := r.URL.Query().Get("limit")
 
-	if il, err := strconv.Atoi(rl); len(rl) > 0 && err != nil {
+	if il, err := strconv.Atoi(rl); len(rl) > 0 && err == nil {
 		pp.Limit = il
 	}
 
 	ro := r.URL.Query().Get("offset")
 
-	if io, err := strconv.Atoi(ro); len(ro) > 0 && err != nil {
+	if io, err := strconv.Atoi(ro); len(ro) > 0 && err == nil {
 		pp.Offset = io
 	}
 

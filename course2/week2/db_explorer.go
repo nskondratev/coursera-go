@@ -105,18 +105,62 @@ func writeJSON(w http.ResponseWriter, statusCode int, p interface{}) {
 	}
 }
 
+type columnDef struct {
+	Name     string
+	Type     string
+	Nullable bool
+	Default  sql.RawBytes
+}
+
 type dbExplorer struct {
-	db     *sql.DB
-	tables map[string]struct {
-		Columns []struct {
-			Name string
-			Type string
-		}
-	}
+	db      *sql.DB
+	tables  []string
+	columns map[string][]*columnDef
 }
 
 func NewDbExplorer(db *sql.DB) (*dbExplorer, error) {
-	return &dbExplorer{db: db}, nil
+	// Fetch tables
+	rows, err := db.Query("SHOW TABLES;")
+	if err != nil {
+		return nil, err
+	}
+	tables := make([]string, 0)
+	for rows.Next() {
+		var tn string
+		err = rows.Scan(&tn)
+		if err != nil {
+			return nil, err
+		}
+		tables = append(tables, tn)
+	}
+	log.Printf("Tables: %#v", tables)
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	// Fetch columns for each table
+	columns := make(map[string][]*columnDef)
+	for _, table := range tables {
+		cols, err := db.Query("SHOW COLUMNS FROM `" + table + "`;")
+		if err != nil {
+			return nil, err
+		}
+		curColumns := make([]*columnDef, 0)
+		for cols.Next() {
+			colDef := &columnDef{}
+			var stub string
+			var null string
+			if err := cols.Scan(&colDef.Name, &colDef.Type, &null, &stub, &colDef.Default, &stub); err != nil {
+				return nil, err
+			}
+			colDef.Nullable = null == "YES"
+			curColumns = append(curColumns, colDef)
+		}
+		if err := cols.Close(); err != nil {
+			return nil, err
+		}
+		columns[table] = curColumns
+	}
+	return &dbExplorer{db: db, tables: tables, columns: columns}, nil
 }
 
 func (de *dbExplorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -138,26 +182,7 @@ func (de *dbExplorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (de *dbExplorer) GetTablesList() ([]string, error) {
 	log.Println("GetTablesList method call")
-	rows, err := de.db.Query("SHOW TABLES;")
-	if err != nil {
-		log.Printf("Error while getting tables list: %s", err.Error())
-		return nil, apiError{http.StatusInternalServerError, err}
-	}
-	res := make([]string, 0)
-	for rows.Next() {
-		var tn string
-		err = rows.Scan(&tn)
-		if err != nil {
-			log.Printf("Error while scanning table name to result: %s", err.Error())
-			return nil, apiError{http.StatusInternalServerError, err}
-		}
-		res = append(res, tn)
-	}
-	err = rows.Close()
-	if err != nil {
-		log.Printf("Error while closing rows: %s", err.Error())
-		return nil, apiError{http.StatusInternalServerError, err}
-	}
+	res := de.tables
 	return res, nil
 }
 

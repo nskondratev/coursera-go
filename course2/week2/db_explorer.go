@@ -315,11 +315,16 @@ func (de *dbExplorer) GetRecordById(table string, id int) (map[string]interface{
 	cols := de.columns[table]
 	values := make([]interface{}, len(cols))
 
+	var pkColName string
+
 	for i, col := range cols {
+		if col.isPK() {
+			pkColName = col.Name
+		}
 		values[i] = col.New()
 	}
 
-	row := de.db.QueryRow("SELECT * FROM `"+table+"` WHERE id = ?", id)
+	row := de.db.QueryRow("SELECT * FROM `"+table+"` WHERE `"+pkColName+"` = ?", id)
 	err := row.Scan(values...)
 	if err == sql.ErrNoRows {
 		return nil, apiError{Err: errors.New("record not found"), HTTPStatus: http.StatusNotFound}

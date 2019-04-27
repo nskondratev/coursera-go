@@ -98,8 +98,8 @@ type recordResponse struct {
 	Record interface{} `json:"record"`
 }
 
-type idResponse struct {
-	ID int `json:"id"`
+type deletedResponse struct {
+	Deleted int64 `json:"deleted"`
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, p interface{}) {
@@ -352,8 +352,38 @@ func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) 
 	if err != nil {
 		return nil, apiError{HTTPStatus: http.StatusInternalServerError, Err: err}
 	}
-	log.Printf("pkColName: %s", pkColName)
 	return map[string]interface{}{pkColName: id}, nil
+}
+
+func (de *dbExplorer) DeleteRecordById(table string, id int) (rowsAffected int64, err error) {
+	log.Printf("DeleteRecordById method call. table: %s, id: %d", table, id)
+	rowsAffected = 0
+	tableExists := false
+	for _, tn := range de.tables {
+		if table == tn {
+			tableExists = true
+			break
+		}
+	}
+	if !tableExists {
+		return rowsAffected, apiError{Err: errors.New("unknown table"), HTTPStatus: http.StatusNotFound}
+	}
+	var pkColName string
+	for _, col := range de.columns[table] {
+		if col.isPK() {
+			pkColName = col.Name
+			break
+		}
+	}
+	if len(pkColName) < 1 {
+		return rowsAffected, apiError{Err: fmt.Errorf("no pk field in table %s", table), HTTPStatus: http.StatusInternalServerError}
+	}
+	res, err := de.db.Exec("DELETE FROM `"+table+"` WHERE `"+pkColName+"` = ?", id)
+	if err != nil {
+		return rowsAffected, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
+	}
+	rowsAffected, err = res.RowsAffected()
+	return
 }
 
 func (de *dbExplorer) HandleGetTablesList(w http.ResponseWriter, r *http.Request) {
@@ -423,6 +453,17 @@ func (de *dbExplorer) HandleRecord(w http.ResponseWriter, r *http.Request, pp *p
 			return
 		}
 		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &recordResponse{Record: res}})
+	case http.MethodDelete:
+		res, err := de.DeleteRecordById(*pp.Table, *pp.ID)
+		if err != nil {
+			c := http.StatusInternalServerError
+			if ae, ok := err.(apiError); ok {
+				c = ae.HTTPStatus
+			}
+			writeJSON(w, c, &responseEnvelope{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &deletedResponse{Deleted: res}})
 	default:
 		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad method"})
 	}

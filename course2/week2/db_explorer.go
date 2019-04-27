@@ -37,7 +37,6 @@ func (pp pathParams) String() string {
 func newPathParams(r *http.Request) (*pathParams, error) {
 	pp := &pathParams{Limit: 5, Offset: 0}
 	p := strings.Split(r.URL.Path, "/")
-	log.Printf("Splitted path: %#v", p)
 	for i, pathPart := range p {
 		pathPart := pathPart
 		if len(pathPart) < 1 {
@@ -148,25 +147,25 @@ func (c columnDef) isPK() bool {
 	return c.Key == "PRI"
 }
 
-func (c columnDef) New() interface{} {
+func (c columnDef) new() interface{} {
 	switch {
-	case c.IsIntType():
+	case c.isIntType():
 		return new(int)
-	case c.IsStringType() && !c.nullable():
+	case c.isStringType() && !c.nullable():
 		return new(string)
-	case c.IsStringType() && c.nullable():
+	case c.isStringType() && c.nullable():
 		return new(nullString)
 	default:
 		return new(sql.RawBytes)
 	}
 }
 
-func (c columnDef) IsStringType() bool {
+func (c columnDef) isStringType() bool {
 	t := strings.ToLower(c.Type)
 	return strings.Contains(t, "char") || strings.Contains(t, "text")
 }
 
-func (c columnDef) IsIntType() bool {
+func (c columnDef) isIntType() bool {
 	t := strings.ToLower(c.Type)
 	return strings.Contains(t, "int")
 }
@@ -177,9 +176,9 @@ func (c columnDef) getDefaultValue() interface{} {
 		return c.Default
 	case c.nullable():
 		return nil
-	case c.IsIntType():
+	case c.isIntType():
 		return 0
-	case c.IsStringType():
+	case c.isStringType():
 		return ""
 	default:
 		return nil
@@ -207,7 +206,6 @@ func NewDbExplorer(db *sql.DB) (*dbExplorer, error) {
 		}
 		tables = append(tables, tn)
 	}
-	log.Printf("Tables: %#v", tables)
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
@@ -235,31 +233,28 @@ func NewDbExplorer(db *sql.DB) (*dbExplorer, error) {
 }
 
 func (de *dbExplorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Printf("[%s] New request on path: %s", r.Method, r.URL.Path)
 	pp, err := newPathParams(r)
 	if err != nil {
 		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: err.Error()})
 	}
-	log.Printf("parsed path params: %s", pp)
 	switch {
 	case pp.isListTables():
-		de.HandleGetTablesList(w, r)
+		de.handleGetTablesList(w, r)
 	case pp.isRecordsList():
-		de.HandleRecordsList(w, r, pp)
+		de.handleRecordsList(w, r, pp)
 	case pp.isRecord():
-		de.HandleRecord(w, r, pp)
+		de.handleRecord(w, r, pp)
 	default:
 		writeJSON(w, http.StatusNotFound, &responseEnvelope{Error: "unknown path"})
 	}
 }
 
-func (de *dbExplorer) GetTablesList() ([]string, error) {
-	log.Println("GetTablesList method call")
+func (de *dbExplorer) getTablesList() ([]string, error) {
 	res := de.tables
 	return res, nil
 }
 
-func (de *dbExplorer) GetRecordsList(table string, limit, offset int) ([]map[string]interface{}, error) {
+func (de *dbExplorer) getRecordsList(table string, limit, offset int) ([]map[string]interface{}, error) {
 	res := make([]map[string]interface{}, 0)
 	tableExists := false
 	for _, tn := range de.tables {
@@ -280,7 +275,7 @@ func (de *dbExplorer) GetRecordsList(table string, limit, offset int) ([]map[str
 		values := make([]interface{}, len(cols))
 
 		for i, col := range cols {
-			values[i] = col.New()
+			values[i] = col.new()
 		}
 
 		err := rows.Scan(values...)
@@ -299,8 +294,7 @@ func (de *dbExplorer) GetRecordsList(table string, limit, offset int) ([]map[str
 	return res, nil
 }
 
-func (de *dbExplorer) GetRecordById(table string, id int) (map[string]interface{}, error) {
-	log.Printf("GetRecordById call. Table: %s, id: %d", table, id)
+func (de *dbExplorer) getRecordById(table string, id int) (map[string]interface{}, error) {
 	tableExists := false
 	for _, tn := range de.tables {
 		if table == tn {
@@ -321,7 +315,7 @@ func (de *dbExplorer) GetRecordById(table string, id int) (map[string]interface{
 		if col.isPK() {
 			pkColName = col.Name
 		}
-		values[i] = col.New()
+		values[i] = col.new()
 	}
 
 	row := de.db.QueryRow("SELECT * FROM `"+table+"` WHERE `"+pkColName+"` = ?", id)
@@ -338,8 +332,7 @@ func (de *dbExplorer) GetRecordById(table string, id int) (map[string]interface{
 	return res, nil
 }
 
-func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) (map[string]interface{}, error) {
-	log.Printf("CreateRecord method call. table: %s, record: %#v", table, record)
+func (de *dbExplorer) createRecord(table string, record map[string]interface{}) (map[string]interface{}, error) {
 	tableExists := false
 	for _, tn := range de.tables {
 		if table == tn {
@@ -388,8 +381,7 @@ func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) 
 	return map[string]interface{}{pkColName: id}, nil
 }
 
-func (de *dbExplorer) DeleteRecordById(table string, id int) (rowsAffected int64, err error) {
-	log.Printf("DeleteRecordById method call. table: %s, id: %d", table, id)
+func (de *dbExplorer) deleteRecordById(table string, id int) (rowsAffected int64, err error) {
 	tableExists := false
 	for _, tn := range de.tables {
 		if table == tn {
@@ -418,8 +410,7 @@ func (de *dbExplorer) DeleteRecordById(table string, id int) (rowsAffected int64
 	return
 }
 
-func (de *dbExplorer) UpdateRecordById(table string, id int, record map[string]interface{}) (rowsAffected int64, err error) {
-	log.Printf("UpdateRecordById method call. table: %s, id: %d record: %#v\n", table, id, record)
+func (de *dbExplorer) updateRecordById(table string, id int, record map[string]interface{}) (rowsAffected int64, err error) {
 	tableExists := false
 	for _, tn := range de.tables {
 		if table == tn {
@@ -442,18 +433,16 @@ func (de *dbExplorer) UpdateRecordById(table string, id int, record map[string]i
 			}
 		} else {
 			if v, ok := record[col.Name]; ok {
-				log.Printf("Process col name %s, passed value: %+v", col.Name, v)
 				if v == nil && !col.nullable() {
 					return rowsAffected, apiError{Err: fmt.Errorf("field %s have invalid type", col.Name), HTTPStatus: http.StatusBadRequest}
 				}
-				log.Printf("Process col name %s, passed value is not nil", col.Name)
 				switch v.(type) {
 				case float64:
-					if !col.IsIntType() {
+					if !col.isIntType() {
 						return rowsAffected, apiError{Err: fmt.Errorf("field %s have invalid type", col.Name), HTTPStatus: http.StatusBadRequest}
 					}
 				case string:
-					if !col.IsStringType() {
+					if !col.isStringType() {
 						return rowsAffected, apiError{Err: fmt.Errorf("field %s have invalid type", col.Name), HTTPStatus: http.StatusBadRequest}
 					}
 				}
@@ -462,7 +451,6 @@ func (de *dbExplorer) UpdateRecordById(table string, id int, record map[string]i
 			}
 		}
 	}
-	log.Printf("Columns to update: %#v, values to update: %#v\n", colsToUpdate, valuesToUpdate)
 	if len(colsToUpdate) < 1 {
 		return
 	}
@@ -479,7 +467,6 @@ func (de *dbExplorer) UpdateRecordById(table string, id int, record map[string]i
 		return rowsAffected, apiError{Err: fmt.Errorf("no pk field in table %s", table), HTTPStatus: http.StatusInternalServerError}
 	}
 	valuesToUpdate = append(valuesToUpdate, id)
-	log.Printf("Query to execute: %s\n", qb.String())
 	res, err := de.db.Exec(qb.String(), valuesToUpdate...)
 	if err != nil {
 		return rowsAffected, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
@@ -488,12 +475,12 @@ func (de *dbExplorer) UpdateRecordById(table string, id int, record map[string]i
 	return
 }
 
-func (de *dbExplorer) HandleGetTablesList(w http.ResponseWriter, r *http.Request) {
+func (de *dbExplorer) handleGetTablesList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad method"})
 		return
 	}
-	res, err := de.GetTablesList()
+	res, err := de.getTablesList()
 	if err != nil {
 		c := http.StatusInternalServerError
 		if ae, ok := err.(apiError); ok {
@@ -505,10 +492,10 @@ func (de *dbExplorer) HandleGetTablesList(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, &responseEnvelope{Response: &listTablesResponse{Tables: res}})
 }
 
-func (de *dbExplorer) HandleRecordsList(w http.ResponseWriter, r *http.Request, pp *pathParams) {
+func (de *dbExplorer) handleRecordsList(w http.ResponseWriter, r *http.Request, pp *pathParams) {
 	switch r.Method {
 	case http.MethodGet:
-		res, err := de.GetRecordsList(*pp.Table, pp.Limit, pp.Offset)
+		res, err := de.getRecordsList(*pp.Table, pp.Limit, pp.Offset)
 		if err != nil {
 			c := http.StatusInternalServerError
 			if ae, ok := err.(apiError); ok {
@@ -523,11 +510,10 @@ func (de *dbExplorer) HandleRecordsList(w http.ResponseWriter, r *http.Request, 
 		rb := make(map[string]interface{})
 		err := decoder.Decode(&rb)
 		if err != nil {
-			log.Printf("Error while parsing json request body: %s", err.Error())
 			writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad input"})
 			return
 		}
-		res, err := de.CreateRecord(*pp.Table, rb)
+		res, err := de.createRecord(*pp.Table, rb)
 		if err != nil {
 			c := http.StatusInternalServerError
 			if ae, ok := err.(apiError); ok {
@@ -542,10 +528,10 @@ func (de *dbExplorer) HandleRecordsList(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
-func (de *dbExplorer) HandleRecord(w http.ResponseWriter, r *http.Request, pp *pathParams) {
+func (de *dbExplorer) handleRecord(w http.ResponseWriter, r *http.Request, pp *pathParams) {
 	switch r.Method {
 	case http.MethodGet:
-		res, err := de.GetRecordById(*pp.Table, *pp.ID)
+		res, err := de.getRecordById(*pp.Table, *pp.ID)
 		if err != nil {
 			c := http.StatusInternalServerError
 			if ae, ok := err.(apiError); ok {
@@ -556,7 +542,7 @@ func (de *dbExplorer) HandleRecord(w http.ResponseWriter, r *http.Request, pp *p
 		}
 		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &recordResponse{Record: res}})
 	case http.MethodDelete:
-		res, err := de.DeleteRecordById(*pp.Table, *pp.ID)
+		res, err := de.deleteRecordById(*pp.Table, *pp.ID)
 		if err != nil {
 			c := http.StatusInternalServerError
 			if ae, ok := err.(apiError); ok {
@@ -571,11 +557,10 @@ func (de *dbExplorer) HandleRecord(w http.ResponseWriter, r *http.Request, pp *p
 		rb := make(map[string]interface{})
 		err := decoder.Decode(&rb)
 		if err != nil {
-			log.Printf("Error while parsing json request body: %s", err.Error())
 			writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad input"})
 			return
 		}
-		res, err := de.UpdateRecordById(*pp.Table, *pp.ID, rb)
+		res, err := de.updateRecordById(*pp.Table, *pp.ID, rb)
 		if err != nil {
 			c := http.StatusInternalServerError
 			if ae, ok := err.(apiError); ok {

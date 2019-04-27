@@ -305,7 +305,7 @@ func (de *dbExplorer) GetRecordById(table string, id int) (map[string]interface{
 	return res, nil
 }
 
-func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) (int, error) {
+func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) (map[string]interface{}, error) {
 	log.Printf("CreateRecord method call. table: %s, record: %#v", table, record)
 	tableExists := false
 	for _, tn := range de.tables {
@@ -315,14 +315,17 @@ func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) 
 		}
 	}
 	if !tableExists {
-		return 0, apiError{Err: errors.New("unknown table"), HTTPStatus: http.StatusNotFound}
+		return nil, apiError{Err: errors.New("unknown table"), HTTPStatus: http.StatusNotFound}
 	}
 
 	cols := make([]*columnDef, 0)
 
+	var pkColName string
 	for _, col := range de.columns[table] {
 		if !col.isPK() {
 			cols = append(cols, col)
+		} else {
+			pkColName = col.Name
 		}
 	}
 
@@ -331,9 +334,6 @@ func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) 
 	placeholders := make([]string, len(cols), len(cols))
 
 	for i, col := range cols {
-		if col.isPK() {
-			continue
-		}
 		if v, ok := record[col.Name]; ok {
 			values[i] = v
 		} else {
@@ -345,15 +345,15 @@ func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) 
 
 	res, err := de.db.Exec("INSERT INTO `"+table+"` (`"+strings.Join(colNames, "`,`")+"`) VALUES ("+strings.Join(placeholders, ",")+")", values...)
 	if err != nil {
-		return 0, apiError{HTTPStatus: http.StatusInternalServerError, Err: err}
+		return nil, apiError{HTTPStatus: http.StatusInternalServerError, Err: err}
 	}
 	id, err := res.LastInsertId()
 
 	if err != nil {
-		return 0, apiError{HTTPStatus: http.StatusInternalServerError, Err: err}
+		return nil, apiError{HTTPStatus: http.StatusInternalServerError, Err: err}
 	}
-
-	return int(id), nil
+	log.Printf("pkColName: %s", pkColName)
+	return map[string]interface{}{pkColName: id}, nil
 }
 
 func (de *dbExplorer) HandleGetTablesList(w http.ResponseWriter, r *http.Request) {
@@ -404,7 +404,7 @@ func (de *dbExplorer) HandleRecordsList(w http.ResponseWriter, r *http.Request, 
 			writeJSON(w, c, &responseEnvelope{Error: err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &idResponse{ID: res}})
+		writeJSON(w, http.StatusOK, &responseEnvelope{Response: res})
 	default:
 		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad method"})
 	}

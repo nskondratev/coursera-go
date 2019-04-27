@@ -468,7 +468,10 @@ func (de *dbExplorer) UpdateRecordById(table string, id int, record map[string]i
 	}
 	qb := strings.Builder{}
 	qb.WriteString("UPDATE `" + table + "` SET ")
-	for _, colName := range colsToUpdate {
+	for i, colName := range colsToUpdate {
+		if i > 0 {
+			qb.WriteString(", ")
+		}
 		qb.WriteString("`" + colName + "` = ?")
 	}
 	qb.WriteString(" WHERE `" + pkColName + "` = ?")

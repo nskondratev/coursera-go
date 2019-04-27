@@ -318,12 +318,22 @@ func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) 
 		return 0, apiError{Err: errors.New("unknown table"), HTTPStatus: http.StatusNotFound}
 	}
 
-	cols := de.columns[table]
+	cols := make([]*columnDef, 0)
+
+	for _, col := range de.columns[table] {
+		if !col.isPK() {
+			cols = append(cols, col)
+		}
+	}
+
 	values := make([]interface{}, len(cols))
 	colNames := make([]string, len(cols), len(cols))
 	placeholders := make([]string, len(cols), len(cols))
 
 	for i, col := range cols {
+		if col.isPK() {
+			continue
+		}
 		if v, ok := record[col.Name]; ok {
 			values[i] = v
 		} else {

@@ -125,10 +125,23 @@ func (ns *nullString) MarshalJSON() ([]byte, error) {
 }
 
 type columnDef struct {
-	Name     string
-	Type     string
-	Nullable bool
-	Default  sql.RawBytes
+	Name       string
+	Type       string
+	Collation  sql.RawBytes
+	Null       string
+	Key        string
+	Default    sql.RawBytes
+	Extra      string
+	Privileges string
+	Comment    string
+}
+
+func (c columnDef) nullable() bool {
+	return c.Null == "YES"
+}
+
+func (c columnDef) isPK() bool {
+	return c.Key == "PRI"
 }
 
 func (c columnDef) New() interface{} {
@@ -136,9 +149,9 @@ func (c columnDef) New() interface{} {
 	switch {
 	case strings.Contains(t, "int"):
 		return new(int)
-	case strings.Contains(t, "char") && !c.Nullable, strings.Contains(t, "text") && !c.Nullable:
+	case strings.Contains(t, "char") && !c.nullable(), strings.Contains(t, "text") && !c.nullable():
 		return new(string)
-	case strings.Contains(t, "char") && c.Nullable, strings.Contains(t, "text") && c.Nullable:
+	case strings.Contains(t, "char") && c.nullable(), strings.Contains(t, "text") && c.nullable():
 		return new(nullString)
 	default:
 		return new(sql.RawBytes)
@@ -173,19 +186,16 @@ func NewDbExplorer(db *sql.DB) (*dbExplorer, error) {
 	// Fetch columns for each table
 	columns := make(map[string][]*columnDef)
 	for _, table := range tables {
-		cols, err := db.Query("SHOW COLUMNS FROM `" + table + "`;")
+		cols, err := db.Query("SHOW FULL COLUMNS FROM `" + table + "`;")
 		if err != nil {
 			return nil, err
 		}
 		curColumns := make([]*columnDef, 0)
 		for cols.Next() {
 			colDef := &columnDef{}
-			var stub string
-			var null string
-			if err := cols.Scan(&colDef.Name, &colDef.Type, &null, &stub, &colDef.Default, &stub); err != nil {
+			if err := cols.Scan(&colDef.Name, &colDef.Type, &colDef.Collation, &colDef.Null, &colDef.Key, &colDef.Default, &colDef.Extra, &colDef.Privileges, &colDef.Comment); err != nil {
 				return nil, err
 			}
-			colDef.Nullable = null == "YES"
 			curColumns = append(curColumns, colDef)
 		}
 		if err := cols.Close(); err != nil {

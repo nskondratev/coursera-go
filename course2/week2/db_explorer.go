@@ -102,6 +102,10 @@ type deletedResponse struct {
 	Deleted int64 `json:"deleted"`
 }
 
+type updatedResponse struct {
+	Updated int64 `json:"updated"`
+}
+
 func writeJSON(w http.ResponseWriter, statusCode int, p interface{}) {
 	if statusCode < 0 {
 		statusCode = http.StatusInternalServerError
@@ -145,17 +149,26 @@ func (c columnDef) isPK() bool {
 }
 
 func (c columnDef) New() interface{} {
-	t := strings.ToLower(c.Type)
 	switch {
-	case strings.Contains(t, "int"):
+	case c.IsIntType():
 		return new(int)
-	case strings.Contains(t, "char") && !c.nullable(), strings.Contains(t, "text") && !c.nullable():
+	case c.IsStringType() && !c.nullable():
 		return new(string)
-	case strings.Contains(t, "char") && c.nullable(), strings.Contains(t, "text") && c.nullable():
+	case c.IsStringType() && c.nullable():
 		return new(nullString)
 	default:
 		return new(sql.RawBytes)
 	}
+}
+
+func (c columnDef) IsStringType() bool {
+	t := strings.ToLower(c.Type)
+	return strings.Contains(t, "char") || strings.Contains(t, "text")
+}
+
+func (c columnDef) IsIntType() bool {
+	t := strings.ToLower(c.Type)
+	return strings.Contains(t, "int")
 }
 
 type dbExplorer struct {
@@ -357,7 +370,6 @@ func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) 
 
 func (de *dbExplorer) DeleteRecordById(table string, id int) (rowsAffected int64, err error) {
 	log.Printf("DeleteRecordById method call. table: %s, id: %d", table, id)
-	rowsAffected = 0
 	tableExists := false
 	for _, tn := range de.tables {
 		if table == tn {
@@ -379,6 +391,73 @@ func (de *dbExplorer) DeleteRecordById(table string, id int) (rowsAffected int64
 		return rowsAffected, apiError{Err: fmt.Errorf("no pk field in table %s", table), HTTPStatus: http.StatusInternalServerError}
 	}
 	res, err := de.db.Exec("DELETE FROM `"+table+"` WHERE `"+pkColName+"` = ?", id)
+	if err != nil {
+		return rowsAffected, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
+	}
+	rowsAffected, err = res.RowsAffected()
+	return
+}
+
+func (de *dbExplorer) UpdateRecordById(table string, id int, record map[string]interface{}) (rowsAffected int64, err error) {
+	log.Printf("UpdateRecordById method call. table: %s, id: %d record: %#v\n", table, id, record)
+	tableExists := false
+	for _, tn := range de.tables {
+		if table == tn {
+			tableExists = true
+			break
+		}
+	}
+	if !tableExists {
+		return rowsAffected, apiError{Err: errors.New("unknown table"), HTTPStatus: http.StatusNotFound}
+	}
+	var pkColName string
+	cols := de.columns[table]
+	colsToUpdate := make([]string, 0)
+	valuesToUpdate := make([]interface{}, 0)
+	for _, col := range cols {
+		if col.isPK() {
+			pkColName = col.Name
+			if _, ok := record[col.Name]; ok {
+				return rowsAffected, apiError{Err: fmt.Errorf("field %s have invalid type", col.Name), HTTPStatus: http.StatusBadRequest}
+			}
+		} else {
+			if v, ok := record[col.Name]; ok {
+				log.Printf("Process col name %s, passed value: %+v", col.Name, v)
+				if v == nil && !col.nullable() {
+					return rowsAffected, apiError{Err: fmt.Errorf("field %s have invalid type", col.Name), HTTPStatus: http.StatusBadRequest}
+				}
+				log.Printf("Process col name %s, passed value is not nil", col.Name)
+				switch v.(type) {
+				case float64:
+					if !col.IsIntType() {
+						return rowsAffected, apiError{Err: fmt.Errorf("field %s have invalid type", col.Name), HTTPStatus: http.StatusBadRequest}
+					}
+				case string:
+					if !col.IsStringType() {
+						return rowsAffected, apiError{Err: fmt.Errorf("field %s have invalid type", col.Name), HTTPStatus: http.StatusBadRequest}
+					}
+				}
+				colsToUpdate = append(colsToUpdate, col.Name)
+				valuesToUpdate = append(valuesToUpdate, v)
+			}
+		}
+	}
+	log.Printf("Columns to update: %#v, values to update: %#v\n", colsToUpdate, valuesToUpdate)
+	if len(colsToUpdate) < 1 {
+		return
+	}
+	qb := strings.Builder{}
+	qb.WriteString("UPDATE `" + table + "` SET ")
+	for _, colName := range colsToUpdate {
+		qb.WriteString("`" + colName + "` = ?")
+	}
+	qb.WriteString(" WHERE `" + pkColName + "` = ?")
+	if len(pkColName) < 1 {
+		return rowsAffected, apiError{Err: fmt.Errorf("no pk field in table %s", table), HTTPStatus: http.StatusInternalServerError}
+	}
+	valuesToUpdate = append(valuesToUpdate, id)
+	log.Printf("Query to execute: %s\n", qb.String())
+	res, err := de.db.Exec(qb.String(), valuesToUpdate...)
 	if err != nil {
 		return rowsAffected, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
 	}
@@ -464,6 +543,25 @@ func (de *dbExplorer) HandleRecord(w http.ResponseWriter, r *http.Request, pp *p
 			return
 		}
 		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &deletedResponse{Deleted: res}})
+	case http.MethodPost:
+		decoder := json.NewDecoder(r.Body)
+		rb := make(map[string]interface{})
+		err := decoder.Decode(&rb)
+		if err != nil {
+			log.Printf("Error while parsing json request body: %s", err.Error())
+			writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad input"})
+			return
+		}
+		res, err := de.UpdateRecordById(*pp.Table, *pp.ID, rb)
+		if err != nil {
+			c := http.StatusInternalServerError
+			if ae, ok := err.(apiError); ok {
+				c = ae.HTTPStatus
+			}
+			writeJSON(w, c, &responseEnvelope{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, &responseEnvelope{Response: &updatedResponse{Updated: res}})
 	default:
 		writeJSON(w, http.StatusNotAcceptable, &responseEnvelope{Error: "bad method"})
 	}

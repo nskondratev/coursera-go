@@ -171,6 +171,21 @@ func (c columnDef) IsIntType() bool {
 	return strings.Contains(t, "int")
 }
 
+func (c columnDef) getDefaultValue() interface{} {
+	switch {
+	case c.Default != nil:
+		return c.Default
+	case c.nullable():
+		return nil
+	case c.IsIntType():
+		return 0
+	case c.IsStringType():
+		return ""
+	default:
+		return nil
+	}
+}
+
 type dbExplorer struct {
 	db      *sql.DB
 	tables  []string
@@ -350,7 +365,7 @@ func (de *dbExplorer) CreateRecord(table string, record map[string]interface{}) 
 		if v, ok := record[col.Name]; ok {
 			values[i] = v
 		} else {
-			values[i] = col.Default
+			values[i] = col.getDefaultValue()
 		}
 		colNames[i] = col.Name
 		placeholders[i] = "?"

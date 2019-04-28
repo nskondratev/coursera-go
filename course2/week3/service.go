@@ -3,13 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"log"
 	"net"
 	"regexp"
+	"sync"
+	"time"
 )
 
 // тут вы пишете код
@@ -63,9 +67,25 @@ func newAclDataFromJSON(in string) (*aclData, error) {
 }
 
 type MyService struct {
-	ctx        context.Context
-	listenAddr string
-	aclData    *aclData
+	ctx          context.Context
+	listenAddr   string
+	aclData      *aclData
+	logData      []*Event
+	logDataMutex *sync.RWMutex
+	//statData      []*Stat
+	//statDataMutex *sync.RWMutex
+}
+
+func (s *MyService) addLogData(timestamp int64, consumer, method, host string) {
+	e := &Event{
+		Timestamp: timestamp,
+		Consumer:  consumer,
+		Method:    method,
+		Host:      host,
+	}
+	s.logDataMutex.Lock()
+	defer s.logDataMutex.Unlock()
+	s.logData = append(s.logData, e)
 }
 
 type AdminService struct{}
@@ -104,28 +124,47 @@ func (s *MyService) checkACL(consumer, method string) bool {
 	return s.aclData.checkACL(consumer, method)
 }
 
-func (s *MyService) getUnaryACLInterceptor() grpc.UnaryServerInterceptor {
+func getConsumerFromContext(ctx context.Context) (string, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+
+	if !ok {
+		return "", errors.New("unable to parse metadata from request context")
+	}
+
+	cons := md.Get("consumer")
+
+	if len(cons) < 1 {
+		return "", errors.New("consumer is not provided")
+	}
+
+	return cons[0], nil
+}
+
+func getClientHostFromContext(ctx context.Context) string {
+	res := ""
+
+	p, ok := peer.FromContext(ctx)
+
+	if ok {
+		res = p.Addr.String()
+	}
+
+	return res
+}
+
+func (s *MyService) getUnaryInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		log.Printf("aclInterceptor call")
-		md, ok := metadata.FromIncomingContext(ctx)
+		consumer, err := getConsumerFromContext(ctx)
 
-		if !ok {
-			return nil, status.Errorf(codes.Unauthenticated, "unable to parse metadata from request context")
+		if err != nil {
+			return nil, status.Errorf(codes.Unauthenticated, err.Error())
 		}
 
-		cons := md.Get("consumer")
-
-		log.Printf("[%s] consumers: %#v", "aclInterceptor", cons)
-
-		if len(cons) < 1 {
-			return nil, status.Errorf(codes.Unauthenticated, "consumer is not provided")
-		}
-
-		log.Printf("[%s] full method: %#v", "aclInterceptor", info.FullMethod)
-
-		if !s.checkACL(cons[0], info.FullMethod) {
+		if !s.checkACL(consumer, info.FullMethod) {
 			return nil, status.Errorf(codes.Unauthenticated, "method not allowed")
 		}
+
+		s.addLogData(time.Now().Unix(), consumer, info.FullMethod, getClientHostFromContext(ctx))
 
 		return handler(ctx, req)
 	}
@@ -149,25 +188,17 @@ func newWrappedStream(s grpc.ServerStream) grpc.ServerStream {
 
 func (s *MyService) getStreamACLInterceptor() grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		md, ok := metadata.FromIncomingContext(ss.Context())
+		consumer, err := getConsumerFromContext(ss.Context())
 
-		if !ok {
-			return status.Errorf(codes.Unauthenticated, "unable to parse metadata from request context")
+		if err != nil {
+			return status.Errorf(codes.Unauthenticated, err.Error())
 		}
 
-		cons := md.Get("consumer")
-
-		log.Printf("[%s] consumers: %#v", "aclInterceptor", cons)
-
-		if len(cons) < 1 {
-			return status.Errorf(codes.Unauthenticated, "consumer is not provided")
-		}
-
-		log.Printf("[%s] full method: %#v", "aclInterceptor", info.FullMethod)
-
-		if !s.checkACL(cons[0], info.FullMethod) {
+		if !s.checkACL(consumer, info.FullMethod) {
 			return status.Errorf(codes.Unauthenticated, "method not allowed")
 		}
+
+		s.addLogData(time.Now().Unix(), consumer, info.FullMethod, getClientHostFromContext(ss.Context()))
 
 		return handler(srv, newWrappedStream(ss))
 	}
@@ -177,7 +208,7 @@ func (s *MyService) start() error {
 	log.Printf("Starting MyService at %s", s.listenAddr)
 
 	server := grpc.NewServer(
-		grpc.UnaryInterceptor(s.getUnaryACLInterceptor()),
+		grpc.UnaryInterceptor(s.getUnaryInterceptor()),
 		grpc.StreamInterceptor(s.getStreamACLInterceptor()),
 	)
 	RegisterAdminServer(server, NewAdminService())
@@ -210,6 +241,6 @@ func StartMyMicroservice(ctx context.Context, listenAddr string, aclData string)
 	if err != nil {
 		return err
 	}
-	ms := &MyService{ctx, listenAddr, acl}
+	ms := &MyService{ctx, listenAddr, acl, make([]*Event, 0), &sync.RWMutex{}}
 	return ms.start()
 }

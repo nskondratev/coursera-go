@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"log"
+	"math/rand"
 	"net"
 	"regexp"
 	"sync"
@@ -27,27 +28,19 @@ type aclData struct {
 func (a *aclData) checkACL(consumer, method string) bool {
 	allowedMethods, ok := a.data[consumer]
 
-	mn := "aclData.checkACL"
-	log.Printf("[%s] consumer: %s, method: %s", mn, consumer, method)
-
 	if !ok {
 		return false
 	}
 
 	parsedMethod := a.sr.Split(method, -1)
 
-	log.Printf("[%s] parsedMethod: %v", mn, parsedMethod)
-
 	if len(parsedMethod) != 3 {
-		log.Printf("[%s] parsedMethod len not 3, return false", mn)
 		return false
 	}
 
 	for _, m := range allowedMethods {
 		pm := a.sr.Split(m, -1)
-		log.Printf("[%s] Process: %v", mn, pm)
 		if pm[1] == parsedMethod[1] && (pm[2] == "*" || pm[2] == parsedMethod[2]) {
-			log.Printf("[%s] Return true", mn)
 			return true
 		}
 	}
@@ -83,18 +76,51 @@ func (s *MyService) addLogData(timestamp int64, consumer, method, host string) {
 		Method:    method,
 		Host:      host,
 	}
+	log.Printf("[MyService.addLogData] add event: %#v", e)
 	s.logDataMutex.Lock()
 	defer s.logDataMutex.Unlock()
 	s.logData = append(s.logData, e)
 }
 
-type AdminService struct{}
+type AdminService struct {
+	s *MyService
+}
 
-func NewAdminService() AdminServer {
-	return &AdminService{}
+func NewAdminService(s *MyService) AdminServer {
+	return &AdminService{s: s}
 }
 
 func (as *AdminService) Logging(in *Nothing, s Admin_LoggingServer) error {
+	funcId := rand.Uint64()
+	ctx := s.Context()
+	as.s.logDataMutex.RLock()
+	prevLen := len(as.s.logData)
+	as.s.logDataMutex.RUnlock()
+	ticker := time.NewTicker(time.Millisecond * 100)
+	defer ticker.Stop()
+	for range ticker.C {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			as.s.logDataMutex.RLock()
+			log.Printf("(%d) [AdminService.Logging] prevLen = %d, cur len = %d", funcId, prevLen, len(as.s.logData))
+			if prevLen == len(as.s.logData) {
+				continue
+			}
+			for i := prevLen; i < len(as.s.logData); i++ {
+				log.Printf("(%d) [AdminService.Logging] send log event #%d", funcId, i)
+				e := as.s.logData[i]
+
+				err := s.Send(e)
+				if err != nil {
+					log.Printf("(%d) [AdminService.Logging] error while sending log event: %s", funcId, err)
+				}
+			}
+			prevLen = len(as.s.logData)
+			as.s.logDataMutex.RUnlock()
+		}
+	}
 	return nil
 }
 
@@ -205,13 +231,11 @@ func (s *MyService) getStreamACLInterceptor() grpc.StreamServerInterceptor {
 }
 
 func (s *MyService) start() error {
-	log.Printf("Starting MyService at %s", s.listenAddr)
-
 	server := grpc.NewServer(
 		grpc.UnaryInterceptor(s.getUnaryInterceptor()),
 		grpc.StreamInterceptor(s.getStreamACLInterceptor()),
 	)
-	RegisterAdminServer(server, NewAdminService())
+	RegisterAdminServer(server, NewAdminService(s))
 	RegisterBizServer(server, NewBizService())
 
 	lis, err := net.Listen("tcp", s.listenAddr)

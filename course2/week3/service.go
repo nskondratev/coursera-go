@@ -13,6 +13,7 @@ import (
 	"math/rand"
 	"net"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -82,6 +83,45 @@ func (s *MyService) addLogData(timestamp int64, consumer, method, host string) {
 	s.logData = append(s.logData, e)
 }
 
+func (e *Event) getHash() string {
+	return strconv.FormatInt(e.Timestamp, 16) + e.Consumer + e.Method + e.Host
+}
+
+func (s *MyService) getStat(since int64, to int64) *Stat {
+	res := &Stat{
+		Timestamp:  time.Now().Unix(),
+		ByMethod:   make(map[string]uint64),
+		ByConsumer: make(map[string]uint64),
+	}
+	s.logDataMutex.RLock()
+	defer s.logDataMutex.RUnlock()
+
+	set := make(map[string]struct{})
+
+	for _, e := range s.logData {
+		eHash := e.getHash()
+		if _, ok := set[eHash]; e.Timestamp < since || e.Timestamp > to || ok {
+			continue
+		}
+		//if e.Timestamp < since || e.Timestamp > to {
+		//	continue
+		//}
+		set[eHash] = struct{}{}
+		if curCount, ok := res.ByMethod[e.Method]; ok {
+			res.ByMethod[e.Method] = curCount + 1
+		} else {
+			res.ByMethod[e.Method] = 1
+		}
+		if curCount, ok := res.ByConsumer[e.Consumer]; ok {
+			res.ByConsumer[e.Consumer] = curCount + 1
+		} else {
+			res.ByConsumer[e.Consumer] = 1
+		}
+	}
+	log.Printf("[MyService.getStat] since %d to %d, res: %v", since, to, res)
+	return res
+}
+
 type AdminService struct {
 	s *MyService
 }
@@ -104,12 +144,10 @@ func (as *AdminService) Logging(in *Nothing, s Admin_LoggingServer) error {
 			return nil
 		default:
 			as.s.logDataMutex.RLock()
-			log.Printf("(%d) [AdminService.Logging] prevLen = %d, cur len = %d", funcId, prevLen, len(as.s.logData))
 			if prevLen == len(as.s.logData) {
 				continue
 			}
 			for i := prevLen; i < len(as.s.logData); i++ {
-				log.Printf("(%d) [AdminService.Logging] send log event #%d", funcId, i)
 				e := as.s.logData[i]
 
 				err := s.Send(e)
@@ -125,6 +163,31 @@ func (as *AdminService) Logging(in *Nothing, s Admin_LoggingServer) error {
 }
 
 func (as *AdminService) Statistics(in *StatInterval, s Admin_StatisticsServer) error {
+	funcId := rand.Uint64()
+	ctx := s.Context()
+	now := time.Now().Unix()
+
+	stat := as.s.getStat(now-int64(in.IntervalSeconds), now)
+
+	err := s.Send(stat)
+	if err != nil {
+		log.Printf("(%d) [AdminService.Statistics] error while sending statistics: %s", funcId, err)
+	}
+
+	ticker := time.NewTicker(time.Second * time.Duration(in.IntervalSeconds))
+	defer ticker.Stop()
+	for t := range ticker.C {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			stat := as.s.getStat(t.Unix()-int64(in.IntervalSeconds), t.Unix())
+			err := s.Send(stat)
+			if err != nil {
+				log.Printf("(%d) [AdminService.Statistics] error while sending statistics: %s", funcId, err)
+			}
+		}
+	}
 	return nil
 }
 

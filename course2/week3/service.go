@@ -165,8 +165,7 @@ func (as *AdminService) Logging(in *Nothing, s Admin_LoggingServer) error {
 		case <-ctx.Done():
 			return nil
 		case e := <-*logCh:
-			err := s.Send(e)
-			if err != nil {
+			if err := s.Send(e); err != nil {
 				log.Printf("(%d) [AdminService.Logging] error while sending log event: %s", funcId, err)
 			}
 		}
@@ -176,30 +175,44 @@ func (as *AdminService) Logging(in *Nothing, s Admin_LoggingServer) error {
 func (as *AdminService) Statistics(in *StatInterval, s Admin_StatisticsServer) error {
 	funcId := rand.Uint64()
 	ctx := s.Context()
-	now := time.Now().Unix()
 
-	stat := as.s.getStat(now-int64(in.IntervalSeconds), now)
-
-	err := s.Send(stat)
-	if err != nil {
-		log.Printf("(%d) [AdminService.Statistics] error while sending statistics: %s", funcId, err)
+	stat := &Stat{
+		ByMethod:   make(map[string]uint64),
+		ByConsumer: make(map[string]uint64),
 	}
+
+	logCh := as.s.getLogChannel()
+	defer as.s.closeChannel(logCh)
 
 	ticker := time.NewTicker(time.Second * time.Duration(in.IntervalSeconds))
 	defer ticker.Stop()
-	for t := range ticker.C {
+
+	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		default:
-			stat := as.s.getStat(t.Unix()-int64(in.IntervalSeconds), t.Unix())
-			err := s.Send(stat)
-			if err != nil {
+		case t := <-ticker.C:
+			stat.Timestamp = t.Unix()
+			if err := s.Send(stat); err != nil {
 				log.Printf("(%d) [AdminService.Statistics] error while sending statistics: %s", funcId, err)
+			}
+			stat = &Stat{
+				ByMethod:   make(map[string]uint64),
+				ByConsumer: make(map[string]uint64),
+			}
+		case e := <-*logCh:
+			if curCount, ok := stat.ByMethod[e.Method]; ok {
+				stat.ByMethod[e.Method] = curCount + 1
+			} else {
+				stat.ByMethod[e.Method] = 1
+			}
+			if curCount, ok := stat.ByConsumer[e.Consumer]; ok {
+				stat.ByConsumer[e.Consumer] = curCount + 1
+			} else {
+				stat.ByConsumer[e.Consumer] = 1
 			}
 		}
 	}
-	return nil
 }
 
 type BizService struct{}

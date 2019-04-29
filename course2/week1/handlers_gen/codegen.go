@@ -41,17 +41,16 @@ func (h serveHTTPMethodsHub) AddHandlerForStruct(sn string, cp *codegenParams) {
 }
 
 func (h serveHTTPMethodsHub) String() string {
-	sb := &strings.Builder{}
-	sb.WriteString("{ ")
+	res := "{ "
 	for sn, cps := range h {
-		sb.WriteString(sn + " : [")
+		res += sn + " : ["
 		for _, cp := range cps {
-			sb.WriteString(fmt.Sprintf("%+v, ", cp))
+			res += fmt.Sprintf("%+v, ", cp)
 		}
-		sb.WriteString("] ")
+		res += "] "
 	}
-	sb.WriteString("}")
-	return sb.String()
+	res += "}"
+	return res
 }
 
 const apiGenPrefix = "// apigen:api "
@@ -118,14 +117,14 @@ func (vp *validateParams) GetValidation() string {
 		case "int":
 			dn, err := strconv.Atoi(vp.Default)
 			if err == nil && dn > 0 {
-				res = res + `
+				res += `
 	if ` + rawVarName + ` == 0 {
 		` + rawVarName + ` = ` + vp.Default + `
 	}
 `
 			}
 		case "string":
-			res = res + `
+			res += `
 	if len(` + rawVarName + `) < 1 {
 		` + rawVarName + ` = "` + vp.Default + `"
 	}
@@ -134,18 +133,15 @@ func (vp *validateParams) GetValidation() string {
 	}
 
 	if len(vp.Enum) > 0 {
-		sb := strings.Builder{}
+		cond := ""
 		for i, v := range vp.Enum {
 			if i > 0 {
-				sb.WriteString(" && ")
+				cond += " && "
 			}
-			sb.WriteString(rawVarName)
-			sb.WriteString(" != \"")
-			sb.WriteString(v)
-			sb.WriteString("\"")
+			cond += rawVarName + ` != "` + v + `"`
 		}
-		res = res + `
-	if ` + sb.String() + ` {
+		res += `
+	if ` + cond + ` {
 		w.WriteHeader(http.StatusBadRequest)
 		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` must be one of [` + strings.Join(vp.Enum, ", ") + `]",nil})
 		_, _ = w.Write(rb)
@@ -157,7 +153,7 @@ func (vp *validateParams) GetValidation() string {
 	if vp.Min != nil {
 		switch vp.FieldType {
 		case "int":
-			res = res + `
+			res += `
 	if ` + rawVarName + ` < ` + strconv.FormatInt(*vp.Min, 10) + ` {
 		w.WriteHeader(http.StatusBadRequest)
 		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` must be >= ` + strconv.FormatInt(*vp.Min, 10) + `",nil})
@@ -166,7 +162,7 @@ func (vp *validateParams) GetValidation() string {
 	}
 `
 		case "string":
-			res = res + `
+			res += `
 	if len(` + rawVarName + `) < ` + strconv.FormatInt(*vp.Min, 10) + ` {
 		w.WriteHeader(http.StatusBadRequest)
 		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` len must be >= ` + strconv.FormatInt(*vp.Min, 10) + `",nil})
@@ -180,7 +176,7 @@ func (vp *validateParams) GetValidation() string {
 	if vp.Max > 0 {
 		switch vp.FieldType {
 		case "int":
-			res = res + `
+			res += `
 	if ` + rawVarName + ` > ` + strconv.FormatInt(vp.Max, 10) + ` {
 		w.WriteHeader(http.StatusBadRequest)
 		rb, _ := json.Marshal(&ResponseEnvelope{"` + vp.ParamName + ` must be <= ` + strconv.FormatInt(vp.Max, 10) + `",nil})

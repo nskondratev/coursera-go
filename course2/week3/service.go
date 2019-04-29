@@ -13,7 +13,6 @@ import (
 	"math/rand"
 	"net"
 	"regexp"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -64,7 +63,6 @@ type MyService struct {
 	ctx          context.Context
 	listenAddr   string
 	aclData      *aclData
-	logData      []*Event
 	logDataMutex *sync.RWMutex
 	logDataChan  []*chan *Event
 }
@@ -104,45 +102,6 @@ func (s *MyService) addLogData(timestamp int64, consumer, method, host string) {
 			*ch <- e
 		}
 	}
-}
-
-func (e *Event) getHash() string {
-	return strconv.FormatInt(e.Timestamp, 16) + e.Consumer + e.Method + e.Host
-}
-
-func (s *MyService) getStat(since int64, to int64) *Stat {
-	res := &Stat{
-		Timestamp:  time.Now().Unix(),
-		ByMethod:   make(map[string]uint64),
-		ByConsumer: make(map[string]uint64),
-	}
-	s.logDataMutex.RLock()
-	defer s.logDataMutex.RUnlock()
-
-	set := make(map[string]struct{})
-
-	for _, e := range s.logData {
-		eHash := e.getHash()
-		if _, ok := set[eHash]; e.Timestamp < since || e.Timestamp > to || ok {
-			continue
-		}
-		//if e.Timestamp < since || e.Timestamp > to {
-		//	continue
-		//}
-		set[eHash] = struct{}{}
-		if curCount, ok := res.ByMethod[e.Method]; ok {
-			res.ByMethod[e.Method] = curCount + 1
-		} else {
-			res.ByMethod[e.Method] = 1
-		}
-		if curCount, ok := res.ByConsumer[e.Consumer]; ok {
-			res.ByConsumer[e.Consumer] = curCount + 1
-		} else {
-			res.ByConsumer[e.Consumer] = 1
-		}
-	}
-	log.Printf("[MyService.getStat] since %d to %d, res: %v", since, to, res)
-	return res
 }
 
 type AdminService struct {
@@ -352,6 +311,6 @@ func StartMyMicroservice(ctx context.Context, listenAddr string, aclData string)
 	if err != nil {
 		return err
 	}
-	ms := &MyService{ctx, listenAddr, acl, make([]*Event, 0), &sync.RWMutex{}, make([]*chan *Event, 0)}
+	ms := &MyService{ctx, listenAddr, acl, &sync.RWMutex{}, make([]*chan *Event, 0)}
 	return ms.start()
 }

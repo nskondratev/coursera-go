@@ -66,21 +66,44 @@ type MyService struct {
 	aclData      *aclData
 	logData      []*Event
 	logDataMutex *sync.RWMutex
-	//statData      []*Stat
-	//statDataMutex *sync.RWMutex
+	logDataChan  []*chan *Event
+}
+
+func (s *MyService) getLogChannel() *chan *Event {
+	s.logDataMutex.Lock()
+	defer s.logDataMutex.Unlock()
+	ch := make(chan *Event)
+	s.logDataChan = append(s.logDataChan, &ch)
+	return &ch
+}
+
+func (s *MyService) closeChannel(ch *chan *Event) {
+	s.logDataMutex.Lock()
+	defer s.logDataMutex.Unlock()
+	for i, och := range s.logDataChan {
+		if och == ch {
+			s.logDataChan = append(s.logDataChan[:i], s.logDataChan[i+1:]...)
+			close(*och)
+			return
+		}
+	}
 }
 
 func (s *MyService) addLogData(timestamp int64, consumer, method, host string) {
-	e := &Event{
-		Timestamp: timestamp,
-		Consumer:  consumer,
-		Method:    method,
-		Host:      host,
+	s.logDataMutex.RLock()
+	defer s.logDataMutex.RUnlock()
+	if len(s.logDataChan) > 0 {
+		e := &Event{
+			Timestamp: timestamp,
+			Consumer:  consumer,
+			Method:    method,
+			Host:      host,
+		}
+		log.Printf("[MyService.addLogData] add event: %#v", e)
+		for _, ch := range s.logDataChan {
+			*ch <- e
+		}
 	}
-	log.Printf("[MyService.addLogData] add event: %#v", e)
-	s.logDataMutex.Lock()
-	defer s.logDataMutex.Unlock()
-	s.logData = append(s.logData, e)
 }
 
 func (e *Event) getHash() string {
@@ -133,33 +156,21 @@ func NewAdminService(s *MyService) AdminServer {
 func (as *AdminService) Logging(in *Nothing, s Admin_LoggingServer) error {
 	funcId := rand.Uint64()
 	ctx := s.Context()
-	as.s.logDataMutex.RLock()
-	prevLen := len(as.s.logData)
-	as.s.logDataMutex.RUnlock()
-	ticker := time.NewTicker(time.Millisecond * 100)
-	defer ticker.Stop()
-	for range ticker.C {
+
+	logCh := as.s.getLogChannel()
+	defer as.s.closeChannel(logCh)
+
+	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		default:
-			as.s.logDataMutex.RLock()
-			if prevLen == len(as.s.logData) {
-				continue
+		case e := <-*logCh:
+			err := s.Send(e)
+			if err != nil {
+				log.Printf("(%d) [AdminService.Logging] error while sending log event: %s", funcId, err)
 			}
-			for i := prevLen; i < len(as.s.logData); i++ {
-				e := as.s.logData[i]
-
-				err := s.Send(e)
-				if err != nil {
-					log.Printf("(%d) [AdminService.Logging] error while sending log event: %s", funcId, err)
-				}
-			}
-			prevLen = len(as.s.logData)
-			as.s.logDataMutex.RUnlock()
 		}
 	}
-	return nil
 }
 
 func (as *AdminService) Statistics(in *StatInterval, s Admin_StatisticsServer) error {
@@ -328,6 +339,6 @@ func StartMyMicroservice(ctx context.Context, listenAddr string, aclData string)
 	if err != nil {
 		return err
 	}
-	ms := &MyService{ctx, listenAddr, acl, make([]*Event, 0), &sync.RWMutex{}}
+	ms := &MyService{ctx, listenAddr, acl, make([]*Event, 0), &sync.RWMutex{}, make([]*chan *Event, 0)}
 	return ms.start()
 }

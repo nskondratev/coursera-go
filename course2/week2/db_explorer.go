@@ -454,20 +454,19 @@ func (de *dbExplorer) updateRecordById(table string, id int, record map[string]i
 	if len(colsToUpdate) < 1 {
 		return
 	}
-	qb := strings.Builder{}
-	qb.WriteString("UPDATE `" + table + "` SET ")
+	q := "UPDATE `" + table + "` SET "
 	for i, colName := range colsToUpdate {
 		if i > 0 {
-			qb.WriteString(", ")
+			q += ", "
 		}
-		qb.WriteString("`" + colName + "` = ?")
+		q += "`" + colName + "` = ?"
 	}
-	qb.WriteString(" WHERE `" + pkColName + "` = ?")
+	q += " WHERE `" + pkColName + "` = ?"
 	if len(pkColName) < 1 {
 		return rowsAffected, apiError{Err: fmt.Errorf("no pk field in table %s", table), HTTPStatus: http.StatusInternalServerError}
 	}
 	valuesToUpdate = append(valuesToUpdate, id)
-	res, err := de.db.Exec(qb.String(), valuesToUpdate...)
+	res, err := de.db.Exec(q, valuesToUpdate...)
 	if err != nil {
 		return rowsAffected, apiError{Err: err, HTTPStatus: http.StatusInternalServerError}
 	}
